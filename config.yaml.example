@@ -1,0 +1,40 @@
+---
+defaults:
+  version: '2018.3'
+net_ip: 10.0.0 # set the ip
+box: bento/ubuntu-16.04 #ubuntu/trusty64
+shell_scripts: # apply shell script to all machines
+  - all_script.sh
+packages: # install this package on all servers
+  - salt-minion
+shell_commands: # apply tehse shell commands to all hosts
+  - echo test
+machines:
+  - count: 3 # makes 3 default hosts these hosts will use ip starting at 0 and name box-ip.replace('/','-')
+  - name: ubuntu-minion-01 # make a named host ip will be next in line ie 3
+  - name: ubuntu-minion-02 # make another named host
+    box: ubuntu-server # this server uses the ubuntu-server image
+    ip: '.101' # ip will be 101
+  - name: master # make another named host
+    boxurl: http://test.com/yum/images/target/vb/mac/rhel-7.5.virtualbox.box # this host uses a url at this location
+    ip: '.10' # ip will be 10 be careful not to colide ips from above
+    mem: 2048 # this box has extra memory and cpu
+    cpus: 2
+    packages:
+      - salt-master # this box will install additional packages
+    shell_scripts:
+      - master_scripts/vagrant_master_init.sh # this box will run a shell script located in the master_scripts directory
+    forwarded_ports: # only this box will forward this port
+      - guest: 5240
+        host: 5240
+    synced_folders: # only this box will link these folders
+      - src: ./master.d
+        dest: /etc/salt/master.d
+        create: true
+        owner: root
+        group: root
+      - src: ./salt-states/salt
+        dest: /srv/salt
+        create: true
+      - src: ./salt-rn
+        dest: /srv/pillar
