@@ -22,9 +22,11 @@ required_plugins.each do |plugin|
 end
 
 def create_machine(data,config,master,ip)
+    dirname = File.basename(Dir.getwd)
     net_ip = "#{data['net_ip'] || '192.168.1'}"
     global_box = "#{data['box'] || 'bento/ubuntu-16.04' }"
-    global_name = "#{global_box}"
+    # might use substring of shasum of absolute path to guarantee uniqueness of box name for this directory without a huge name
+    global_name = "#{dirname}-#{global_box}"
 
     # data is global properties
     # master is machine specific properties
