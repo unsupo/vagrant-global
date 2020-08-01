@@ -20,6 +20,57 @@ required_plugins.each do |plugin|
     exit system('vagrant', *ARGV)
   end
 end
+def provision(dict, master_config)
+  if dict.has_key?('shell_commands')
+    dict['shell_commands'].each do |cmd|
+      master_config.vm.provision "shell" do |shell|
+        shell.inline = <<-SHELL
+          #{cmd}
+        SHELL
+      end # end shell do
+    end
+  end
+end
+def provision_script(dict,master_config)
+  if dict.has_key?('shell_scripts')
+    dict['shell_scripts'].each do |script|
+      master_config.vm.provision "shell", path: "#{script}"
+    end
+  end
+end
+def package(dict, master_config)
+  if dict.has_key?('packages')
+    dict['packages'].each do |pkg|
+      master_config.vm.provision "shell" do |shell|
+        shell.inline = <<-SHELL
+          which apt-get && apt-get install -y "#{pkg}" || yum install -y "#{pkg}"
+        SHELL
+      end # end shell do
+    end # end packages do
+  end # end if
+end
+def forward_ports(dict,master_config) # TODO: support 8080:8081 syntax
+  if dict.has_key?('forwarded_ports')
+    if dict['forwarded_ports'].instance_of? Array
+      dict['forwarded_ports'].each do |port|
+        if port.instance_of?(Hash) && port.has_key?('guest')
+          master_config.vm.network "forwarded_port", guest: port['guest'], host: port['host']
+        else
+          master_config.vm.network "forwarded_port", guest: port, host: port
+        end
+      end
+    else
+      master_config.vm.network "forwarded_port", guest: dict['forwarded_ports'], host: dict['forwarded_ports']
+    end
+  end
+end
+def sync_folders(dict, master_config)
+  if dict.has_key?('synced_folders')
+    dict['synced_folders'].each do |folder|
+      master_config.vm.synced_folder folder['src'], folder['dest'], folder['options']
+    end
+  end
+end
 
 def create_machine(data,config,master,ip)
     dirname = File.basename(Dir.getwd)
@@ -31,9 +82,6 @@ def create_machine(data,config,master,ip)
     # data is global properties
     # master is machine specific properties
 
-    # if data.has_key?('box')
-    #   box = "#{data['box']}"
-    # end
     box = "#{global_box}"
     if master.has_key?('box') # if machine has box defined, used that other wise use default
       box = "#{master['box']}"
@@ -61,41 +109,16 @@ def create_machine(data,config,master,ip)
         vb.customize ["modifyvm", :id, "--nictype1", "virtio" ]
         vb.customize ["modifyvm", :id, "--nictype2", "virtio" ]
       end # end provider
-      # if all masters need these files
-      if data.has_key?('synced_folders')
-        data['synced_folders'].each do |folder|
-          master_config.vm.synced_folder folder['src'], folder['dest'], folder['options']
-        end
-      end
-      # if all masters need these ports
-      if data.has_key?('forwarded_ports')
-        data['forwarded_ports'].each do |port|
-          master_config.vm.network "forwarded_port", guest: port['guest'], host: port['host']
-        end
-      end
-      if data.has_key?('packages')
-        data['packages'].each do |pkg|
-          master_config.vm.provision "shell" do |shell|
-            shell.inline = <<-SHELL
-              which apt-get && apt-get install -y "#{pkg}" || yum install -y "#{pkg}"
-            SHELL
-          end # end shell do
-        end # end packages do
-      end # end if
-      if data.has_key?('shell_commands')
-        data['shell_commands'].each do |cmd|
-          master_config.vm.provision "shell" do |shell|
-            shell.inline = <<-SHELL
-              #{cmd}
-            SHELL
-          end # end shell do
-        end
-      end
-      if data.has_key?('shell_scripts')
-        data['shell_scripts'].each do |script|
-          master_config.vm.provision "shell", path: "#{script}"
-        end
-      end
+      forward_ports(data,master_config)
+      forward_ports(master,master_config)
+      package(data,master_config)
+      package(master,master_config)
+      provision(data,master_config)
+      provision(master,master_config)
+      provision_script(data,master_config)
+      provision_script(master,master_config)
+      sync_folders(data, master_config)
+      sync_folders(master, master_config)
       master_config.vm.box = "#{box}"
       if master.has_key?('boxversion') || data.has_key?('boxversion')
         master_config.vm.box_version = "#{boxversion}"
@@ -108,39 +131,6 @@ def create_machine(data,config,master,ip)
         master_config.vm.network "private_network", ip: "#{net_ip}#{master['ip']}"
       else
         master_config.vm.network "private_network", type: "dhcp"
-      end
-      if master.has_key?('synced_folders')
-        master['synced_folders'].each do |folder|
-          master_config.vm.synced_folder folder['src'], folder['dest'], folder['options']
-        end
-      end
-      if master.has_key?('forwarded_ports')
-        master['forwarded_ports'].each do |port|
-          master_config.vm.network "forwarded_port", guest: port['guest'], host: port['host']
-        end
-      end
-      if master.has_key?('packages')
-        master['packages'].each do |pkg|
-          master_config.vm.provision "shell" do |shell|
-            shell.inline = <<-SHELL
-              which apt-get && apt-get install -y "#{pkg}" || yum install -y "#{pkg}"
-            SHELL
-          end # end shell do
-        end # end packages do
-      end # end if
-      if master.has_key?('shell_commands')
-        master['shell_commands'].each do |cmd|
-          master_config.vm.provision "shell" do |shell|
-            shell.inline = <<-SHELL
-              #{cmd}
-            SHELL
-          end # end shell do
-        end
-      end
-      if master.has_key?('shell_scripts')
-        master['shell_scripts'].each do |script|
-          master_config.vm.provision "shell", path: "#{script}"
-        end
       end
     end # end of config.vm.define
 end # end create_machine
@@ -156,8 +146,28 @@ def configure(data)
     ip = 0
     data['machines'].each do |master|
       if master.has_key?('count')
+        # TODO: Loop over the children of the count and add configs based off it
+        # - count:
+        #   amount: 4
+        #   - n: 2 # this is 0 indexed
+        #     forwarded_ports: 8080
+        count = master['count']
+        # vms = Array.new(count)
+        # if master['count'].instance_of? Hash
+        #   # if it's an instance of Hash then that means it applies to all in this count
+        #   master['count'].each do |key, value|
+        #     # add all these key values to below create machine command
+        #   end
+        # elsif master['count'].instance_of? Array
+        #   # if it's an instance of Array then apply it indivdually unless n is all
+        #   master['count'].each do |machine|
+        #     # use create_machine command and add any key values associated with this machine
+        #     # to the create_machine command then set it's n value to true in the vms array
+        #     # so the below create_machine doesn't create it again
+        #   end
+        # end
         v=0
-        while v < master['count']
+        while v < count
           create_machine(data,config,master,ip)
           v+=1
           ip+=1
@@ -173,6 +183,7 @@ end
 data = {"machines"=>[{"count"=>1}]}
 if !File.file?("#{dir}/config.yaml")
   print "No config.yaml file using defaults, to override Please copy config.yaml.example to config.yaml then configure your hosts to continue\n"
+  File.open('config.yaml', 'w') { |file| file.write(data.to_yaml) }
   # configure()
   # exit
 else
